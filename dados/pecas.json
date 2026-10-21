@@ -1,0 +1,7 @@
+{
+  "SNS-FC-01": {"descricao": "Sensor de fim de curso indutivo M18", "quantidade": 3},
+  "COR-EST-02": {"descricao": "Correia da esteira EST-02 (3 m)", "quantidade": 1},
+  "VED-PRN-01": {"descricao": "Kit de vedação do cilindro da prensa PRN-01", "quantidade": 2},
+  "FLT-CMP-01": {"descricao": "Elemento filtrante de ar do compressor CMP-01", "quantidade": 0},
+  "VLV-CMP-01": {"descricao": "Válvula de alívio do compressor CMP-01", "quantidade": 1}
+}

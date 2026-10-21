@@ -1,0 +1,30 @@
+{
+  "EST-02": {
+    "nome": "Esteira transportadora 2",
+    "linha": "Linha 1",
+    "setor": "Montagem",
+    "criticidade": "alta",
+    "equipe": "Manutenção Mecânica"
+  },
+  "PRN-01": {
+    "nome": "Prensa hidráulica 1",
+    "linha": "Linha 2",
+    "setor": "Estamparia",
+    "criticidade": "alta",
+    "equipe": "Hidráulica"
+  },
+  "CMP-01": {
+    "nome": "Compressor de ar 1",
+    "linha": "Utilidades",
+    "setor": "Casa de máquinas",
+    "criticidade": "media",
+    "equipe": "Utilidades"
+  },
+  "INJ-04": {
+    "nome": "Injetora de plástico 4",
+    "linha": "Linha 3",
+    "setor": "Injeção",
+    "criticidade": "media",
+    "equipe": "Manutenção Elétrica"
+  }
+}

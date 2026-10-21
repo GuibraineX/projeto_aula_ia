@@ -1,0 +1,5 @@
+gradio>=6,<7
+ollama>=0.6,<1
+mcp==1.30.0
+python-dotenv>=1,<2
+google-genai>=2,<3
