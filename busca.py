@@ -29,7 +29,7 @@ from google.genai import types
 
 load_dotenv(Path(__file__).parent / ".env")  # antes de ler qualquer variável
 
-PASTA = Path(__file__).parent / "dados"
+PASTA = Path(__file__).parent / "data"
 BANCO = Path(os.getenv("FABRICA_BANCO", PASTA / "fabrica.sqlite"))
 MODELO_EMBEDDING = os.getenv("MODELO_EMBEDDING", "gemini-embedding-001")
 K = 3  # quantos trechos vão para o contexto (o K da recuperação, não o top_k da LLM)
@@ -52,7 +52,7 @@ def carregar_trechos() -> list[Trecho]:
     slide 7): o significado do E-12 fica no mesmo trecho da verificação.
     """
     trechos = []
-    for arquivo in sorted((PASTA / "manuais").glob("*.md")):
+    for arquivo in sorted((PASTA / "manuals").glob("*.md")):
         equipamento = arquivo.stem.upper()
         conteudo = arquivo.read_text(encoding="utf-8")
         for secao in conteudo.split("\n## ")[1:]:
@@ -83,7 +83,7 @@ def _embedding(textos: list[str], papel: str) -> list[list[float]]:
     chave = os.getenv("GEMINI_API_KEY")
     if not chave:
         raise RuntimeError("GEMINI_API_KEY não definida no .env")
-    cliente = genai.Client(api_key=chave, http_option=types.HttpOptions(timeout=30_000))
+    cliente = genai.Client(api_key=chave, http_options=types.HttpOptions(timeout=30_000))
     resposta = cliente.models.embed_content(
         model=MODELO_EMBEDDING,
         contents=textos,
@@ -112,10 +112,10 @@ def _vetores_dos_trechos(trechos: list[Trecho]) -> list[list[float]]:
                 salvos[chaves[i]] = json.dumps(vetor)
                 con.execute("INSERT OR REPLACE INTO vetores VALUES (?, ?)",
                             (chaves[i], salvos[chaves[i]]))
-                con.commit()
+            con.commit()
     finally:
         con.close()
-    return [json.loads(salvos[chaves]) for chave in chaves]
+    return [json.loads(salvos[chave]) for chave in chaves]
 
 # ------------------------------------------------------------------
 # 2b. Busca lexical (plano B, sem embeddings)
@@ -124,11 +124,11 @@ PARADAS = set("""a o as os um uma de da do das dos em no na nos nas e ou que com
 por para se nao sim esta esse essa isso ela ele foi ser ter tem mais muito pela
 pelo como mas sem sobre entre quando qual quais meu minha""".split())
 
-def _palavras(texto: str) -> list[str]:
+def _palavras(texto: str) -> set[str]:
     """Minúsculas, sem acento, sem palavras vazias e com um 'radical' grosseiro."""
     simples = unicodedata.normalize("NFKD", texto.lower()).encode("ascii", "ignore").decode()
     palavras = set()
-    for p in re.findall(r"[a-z]+-\d+|[a-z0=9]+", simples):
+    for p in re.findall(r"[a-z]+-\d+|[a-z0-9]+", simples):
         if p in PARADAS or len(p) < 3:
             continue
         palavras.add(p if "-" in p or p.isdigit() else p[:4])
@@ -142,7 +142,7 @@ def _similaridade_lexical(a: set[str], b: set[str]) -> float:
 # ------------------------------------------------------------------
 # 3. Buscar e devolver com fonte
 # ------------------------------------------------------------------
-def _codigos_de_erro(texto: str) -> list[str]:
+def _codigos_de_erro(texto: str) -> set[str]:
     """Encontra códigos como E-12, E12 ou e-7 e devolve no formato E-12 / E-07."""
     return {f"E-{int(n):02d}" for n in re.findall(r"\bE-?(\d{1,3})\b", texto.upper())}
 

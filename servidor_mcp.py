@@ -30,7 +30,7 @@ import busca
 
 load_dotenv(Path(__file__).parent / ".env")  # para quando o servidor roda sozinho
 
-PASTA = Path(__file__).parent / "dados"
+PASTA = Path(__file__).parent / "data"
 BANCO = Path(os.getenv("FABRICA_BANCO", PASTA / "fabrica.sqlite"))
 EQUIPAMENTOS = json.loads((PASTA / "equipamentos.json").read_text(encoding="utf-8"))
 PECAS_INICIAS = json.loads((PASTA / "pecas.json").read_text(encoding="utf-8"))
@@ -124,6 +124,155 @@ def consultar_estoque(
         if linha is None:
             return {"encontrada": False, "peca": peca}
         return {"encontrada": True, **dict(linha)}
+
+
+# ------------------------------------------------------------------
+# Ferramentas de ação (gravam dados)
+# ------------------------------------------------------------------
+@mcp.tool()
+def abrir_chamado(
+    equipamento: Annotated[str, Field(description="Código do equipamento, ex.: EST-02")],
+    sintoma: Annotated[str, Field(description="O que foi observado, nas palavras da pessoa")],
+    prioridade: Annotated[Literal["baixa", "media", "alta"], 
+                        Field(description="Prioridade conforme as normas")],
+    codigo_erro: Annotated[str, Field(description="Código de erro, ex.: E-12. Vazio se não houver")] = "",
+) -> dict[str, Any]:
+    """Abre um chamado de manutenção e devolve o número de protocolo.
+
+    Se já existir um chamado aberto igual, devolve o mesmo protocolo
+    em vez de criar outro (controle de duplicatas).
+    """
+    eq = normalizar_codigo(equipamento)
+    if eq not in EQUIPAMENTOS:
+        raise ValueError(f"Equipamento {eq} não existe. Válidos: {', '.join(EQUIPAMENTOS)}")
+    sintoma = sintoma.strip()
+    if len(sintoma) < 5:
+        raise ValueError("Descreve o sintoma com pelo menos 5 caracteres.")
+    codigo_erro = codigo_erro.strip().upper()
+
+    with banco() as con:
+        if codigo_erro:
+            igual = con.execute(
+                "SELECT protocolo FROM chamados WHERE equipamento=? AND codigo_erro=? "
+                "AND status='ABERTO'", (eq, codigo_erro)).fetchone()
+        else:
+            igual = con.execute(
+                "SELECT protocolo FROM chamados WHERE equipamento=? AND sintoma=? "
+                "AND status='ABERTO'", (eq, sintoma.lower())).fetchone()
+        if igual:
+            return {"protocolo": igual["protocolo"], "duplicado": True,
+                    "mensagem": "Já existe um chamado aberto para este problema."}
+
+        total = con.execute("SELECT COUNT(*) FROM chamados").fetchone()[0]
+        protocolo = f"LAB-{101 + total}"
+        con.execute("INSERT INTO chamados VALUES (?, ?, ?, ?, ?, 'ABERTO', ?)",
+                    (protocolo, eq, sintoma, codigo_erro, prioridade, agora()))
+    return {"protocolo": protocolo, "duplicado": False, "status": "ABERTO",
+            "equipe": EQUIPAMENTOS[eq]["equipe"]}
+
+@mcp.tool()
+def solicitar_reserva_peca(
+    protocolo: Annotated[str, Field(description="Protocolo do chamado, ex.: LAB-101")],
+    peca: Annotated[str, Field(description="Código da peça, ex.: SNS-FC-01")],
+    quantidade: Annotated[int, Field(description="Quantidade de unidades, de 1 a 10",
+                                     ge=1, le=10, strict=True)],
+) -> dict[str, Any]:
+    """Pede a reserva de uma peça para um chamado.
+
+    A reserva fica AGUARDANDO_APROVACAO até uma pessoa responsável aprovar.
+    """
+    protocolo, peca = protocolo.strip().upper(), peca.strip().upper()
+    with banco() as con:
+        if con.execute("SELECT 1 FROM chamados WHERE protocolo=?", (protocolo,)).fetchone() is None:
+            raise ValueError(f"O chamado {protocolo} não existe. Abra o chamado antes.")
+        item = con.execute("SELECT * FROM estoque WHERE peca=?", (peca,)).fetchone()
+        if item is None:
+            raise ValueError(f"A peça {peca} não existe no almoxarifado.")
+        if item["quantidade"] < quantidade:
+            return {"criada": False, "motivo": "estoque insuficiente",
+                    "disponivel": item["quantidade"], "peca": peca}
+        igual = con.execute(
+            "SELECT id FROM reservas WHERE protocolo=? AND peca=? "
+            "AND status='AGUARDANDO_APROVACAO'", (protocolo, peca)).fetchone()
+        if igual:
+            return {"criada": False, "reserva": igual["id"], "duplicado": True,
+                    "status": "AGUARDANDO_APROVACAO"}
+        total = con.execute("SELECT COUNT(*) FROM reservas").fetchone()[0]
+        reserva = f"RES-{total + 1:03d}"
+        con.execute("INSERT INTO reservas VALUES (?, ?, ?, ?, 'AGUARDANDO_APROVACAO', ?, NULL)",
+                    (reserva, protocolo, peca, quantidade, agora()))
+    return {"criada": True, "reserva": reserva, "status": "AGUARDANDO_APROVACAO",
+            "aviso": "A reserva só vale depois da aprovação de uma pessoa responsável."}
+
+
+# ------------------------------------------------------------------
+# Ferramentas que a aplicação usa, mas o MODELO não recebe
+# ------------------------------------------------------------------
+@mcp.tool()
+def listar_chamados() -> dict[str, Any]:
+    """Lista os 20 chamados mais recentes"""
+    with banco() as con:
+        linhas = con.execute(
+            "SELECT * FROM chamados ORDER BY criado_em DESC, protocolo DESC LIMIT 20").fetchall()
+    return {"chamados": [dict(l) for l in linhas]}
+
+
+@mcp.tool()
+def listar_reservas() -> dict[str, Any]:
+    """Lista as 20 reservas de peças mais recentes."""
+    with banco() as con:
+        linhas = con.execute(
+            "SELECT * FROM reservas ORDER BY criado_em DESC, id DESC LIMIT 20").fetchall()
+    return {"reservas": [dict(l) for l in linhas]}
+
+
+@mcp.tool()
+def aprovar_reserva(
+    reserva: Annotated[str, Field(description="Identificador da reserva, ex.: RES-001")],
+) -> dict[str, Any]:
+    """Aprova uma reserva pendente e baixa a peça do estoque."""
+    reserva = reserva.strip().upper()
+    with banco() as con:
+        r = con.execute("SELECT * FROM reservas WHERE id=?", (reserva,)).fetchone()
+        if r is None or r["status"] != "AGUARDANDO_APROVACAO":
+            raise ValueError(f"A reserva {reserva} não está aguardando aprovação.")
+        disponivel = con.execute("SELECT quantidade FROM estoque WHERE peca=?",
+                                 (r["peca"],)).fetchone()[0]
+        if disponivel < r["quantidade"]:
+            raise ValueError(f"Estoque insuficiente: restam {disponivel} unidade(s).")
+        con.execute("UPDATE estoque SET quantidade = quantidade - ? WHERE peca = ?",
+                    (r["quantidade"], r["peca"]))
+        con.execute("UPDATE reservas SET status = 'APROVADA', decidido_em=? WHERE id=?",
+                    (agora(), reserva))
+    return {"reserva": reserva, "status": "APROVADA"}
+
+
+@mcp.tool()
+def recusar_reserva(
+    reserva: Annotated[str, Field(description="Identificador da reserva, ex.: RES-001")],
+) -> dict[str, Any]:
+    """Recusa uma reserva pendente."""
+    reserva = reserva.strip().upper()
+    with banco() as con:
+        r = con.execute("SELECT status FROM reservas WHERE id=?", (reserva,)).fetchone()
+        if r is None or r["status"] != "AGUARDANDO_APROVACAO":
+            raise ValueError(f"A reserva {reserva} não está aguardando aprovação.")
+        con.execute("UPDATE reservas SET status='RECUSADA', decidido_em=? WHERE id=?",
+                    (agora(), reserva))
+    return {"reserva": reserva, "status": "RECUSADA"}
+
+
+@mcp.tool()
+def reiniciar_equipamento(
+    codigo: Annotated[str, Field(description="Código do equipamento")],
+) -> dict[str, Any]:
+    """Reinicia um equipamento remotamente (SIMULAÇÃO, nunca executa nada).
+
+    Existe para mostrar que um servidor pode publicar uma ferramenta
+    perigosa e a aplicação decide não entregá-la ao modelo.
+    """
+    return {"simulado": True, "executado": False, "codigo": normalizar_codigo(codigo),
+            "aviso": "Ferramenta de demonstração. Nenhum equipamento foi comandado."}
 
 preparar_banco()
 

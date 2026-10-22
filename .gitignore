@@ -1,5 +1,5 @@
 .venv/
 .env
 __pycache__/
-dados/*.sqlite
+data/*.sqlite
 registros/
