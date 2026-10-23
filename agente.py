@@ -90,16 +90,17 @@ SISTEMA = """Você é o assistente de triagem de manutenção da Fábrica Modelo
 Objetivo: organizar cada chamado e encaminhá-lo à equipe responsável com os dados necessários.
 
 Como trabalhar:
-1. Descubra o código do equipamento (ex.: EST-02). Se a pessoa não informar, pergunte. Não adivinhe.
+1. Identifique na conversa o código do equipamento (formato AAA-00). Se a pessoa não informou, pergunte qual é o equipamento ANTES de usar qualquer ferramenta. Nunca adivinhe e nunca use como valor real os exemplos destas instruções.
 2. Confira o equipamento com consultar_equipamento.
-3. Use buscar_manual com o código de erro e/ou o sintoma. Oriente SOMENTE com o que os trechos dizem e cite a fonte entre colchetes, ex.: [EST-02 · E-12 · Sensor de fim de curso].
-4. Abra o chamado com abrir_chamado. Só diga que registrou se a ferramenta devolver um protocolo, e informe esse protocolo.
-5. Se o manual indicar a troca de uma peça, consulte o estoque. Reservar peça depende de aprovação humana: use solicitar_reserva_peca e avise que a reserva aguarda aprovação.
+3. Use buscar_manual com o código de erro e/ou o sintoma. Oriente SOMENTE com o que os trechos dizem: explique o significado E a verificação indicada, e cite a fonte entre colchetes, no formato [EQUIPAMENTO · título do trecho].
+4. Abra o chamado com abrir_chamado. Só diga que registrou se a ferramenta devolver um protocolo, e informe esse protocolo. Se vier duplicado=true, diga que o chamado já existia e confira em reservas_do_chamado as peças que ele já tem.
+5. Se o manual indicar a troca de uma peça que o chamado ainda não tem, consulte o estoque e use solicitar_reserva_peca. Se a reserva for criada, avise que ela aguarda aprovação humana. Se não for criada, informe o motivo exato que a ferramenta devolveu.
 
 Limites:
 - Você não liga, desliga, rearma nem reinicia equipamentos. Recuse esses pedidos e oriente procurar o técnico da equipe responsável no local.
 - Nunca invente códigos de erro, peças, protocolos, prazos ou procedimentos.
-- Risco à segurança (fumaça, fogo, choque, vazamento grande, pessoa ferida): oriente afastar as pessoas e chamar a Segurança do Trabalho, e abra o chamado com prioridade alta.
+- Risco à segurança (fumaça, fogo, choque, vazamento grande, pessoa ferida): oriente afastar as pessoas e chamar a Segurança do Trabalho, consulte buscar_manual para as normas gerais, cite a fonte e abra o chamado com prioridade alta.
+- Se o equipamento não tiver manual próprio (tem_manual_do_equipamento=false), diga isso claramente e não use trechos gerais como se fossem um diagnóstico.
 - Se uma ferramenta devolver ok=false, explique o problema. Não finja que deu certo.
 
 Responda em português, de forma curta e organizada."""
@@ -109,7 +110,6 @@ Responda em português, de forma curta e organizada."""
 # 5. CONEXÃO COM O SERVIDOR MCP (Aula 9)
 # ------------------------------------------------------------------
 TRANSPORTE = f"HTTP ({os.getenv('MCP_URL')})" if os.getenv("MCP_URL") else "stdio"
-
 
 
 @asynccontextmanager
@@ -278,3 +278,45 @@ async def atender(mensagens: list) -> dict:
     }
     salvar_registro(mensagens, saida)
     return saida
+
+
+async def decidir_reserva(reserva: str, aprovar: bool) -> tuple[dict, dict]:
+    """Chamado pelo BOTÃO da interface: a decisão é humana, não do modelo."""
+    async with conectar() as sessao:
+        nome = "aprovar_reserva" if aprovar else "recusar_reserva"
+        resultado, _ = await chamar_ferramenta(sessao, nome, {"reserva": reserva},
+                                               SO_DA_APLICACAO)
+        painel = await ler_painel(sessao)
+    return resultado, painel
+
+
+async def situacao() -> tuple[dict, dict]:
+    """Usado ao abrir a interface: ferramentas descobertas e painel atual."""
+    async with conectar() as sessao:
+        _, resumo = await descobrir(sessao)
+        painel = await ler_painel(sessao)
+    return resumo, painel
+
+
+# ------------------------------------------------------------------
+# 8. REGISTRO (evidência de cada atendimento, um JSON por linha)
+# ------------------------------------------------------------------
+def salvar_registro(mensagens: list, saida: dict) -> None:
+    PASTA_REGISTROS.mkdir(exist_ok=True)
+    pedido = next((m["content"] for m in reversed(mensagens)
+                   if m.get("role") == "user"), "")
+    linha = {
+        "quando": datetime.now().isoformat(timespec="seconds"),
+        "modelo": MODELO, "onde": ONDE, "pedido": pedido,
+        **{k: v for k, v in saida.items() if k != "painel"},
+    }
+    arquivo = PASTA_REGISTROS / f"{datetime.now():%Y-%m-%d}.jsonl"
+    with open(arquivo, "a", encoding="utf-8") as f:
+        f.write(json.dumps(linha, ensure_ascii=False) + "\n")
+
+
+def erro_raiz(erro: BaseException) -> BaseException:
+    """O MCP usa grupos de tarefas: o erro real pode vir dentro de um ExceptionGroup."""
+    while getattr(erro, "exceptions", None):
+        erro = erro.exceptions[0]
+    return erro

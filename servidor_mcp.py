@@ -17,6 +17,7 @@ import os
 import random
 import sqlite3
 import sys
+import unicodedata
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -24,7 +25,7 @@ from typing import Annotated, Any, Literal
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 import busca
 
@@ -74,6 +75,18 @@ def preparar_banco():
 
 def agora() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def minusculo_sem_acento(valor):
+    """'Alta' vira 'alta' e 'Média' vira 'media'. Valores que não são texto passam como estão.
+
+    Roda ANTES da validação (Parte 8): aceita variações inofensivas,
+    mas um valor errado, como 'urgente', continua sendo recusado.
+    """
+    if not isinstance(valor, str):
+        return valor
+    simples = unicodedata.normalize("NFKD", valor.strip().lower())
+    return simples.encode("ascii", "ignore").decode()
 
 
 def normalizar_codigo(codigo: str) -> str:
@@ -133,7 +146,8 @@ def consultar_estoque(
 def abrir_chamado(
     equipamento: Annotated[str, Field(description="Código do equipamento, ex.: EST-02")],
     sintoma: Annotated[str, Field(description="O que foi observado, nas palavras da pessoa")],
-    prioridade: Annotated[Literal["baixa", "media", "alta"], 
+    prioridade: Annotated[Literal["baixa", "media", "alta"],
+                        BeforeValidator(minusculo_sem_acento),
                         Field(description="Prioridade conforme as normas")],
     codigo_erro: Annotated[str, Field(description="Código de erro, ex.: E-12. Vazio se não houver")] = "",
 ) -> dict[str, Any]:
@@ -160,9 +174,14 @@ def abrir_chamado(
                 "SELECT protocolo FROM chamados WHERE equipamento=? AND sintoma=? "
                 "AND status='ABERTO'", (eq, sintoma.lower())).fetchone()
         if igual:
+            # Parte 8: conta ao modelo o que o chamado JÁ tem, para ele não pedir de novo
+            reservas = con.execute(
+                "SELECT id, peca, quantidade, status FROM reservas WHERE protocolo=?",
+                (igual["protocolo"],)).fetchall()
             return {"protocolo": igual["protocolo"], "duplicado": True,
-                    "mensagem": "Já existe um chamado aberto para este problema."}
-
+                    "mensagem": "Já existe um chamado aberto para este problema.",
+                    "reservas_do_chamado": [dict(r) for r in reservas]}
+        
         total = con.execute("SELECT COUNT(*) FROM chamados").fetchone()[0]
         protocolo = f"LAB-{101 + total}"
         con.execute("INSERT INTO chamados VALUES (?, ?, ?, ?, ?, 'ABERTO', ?)",
